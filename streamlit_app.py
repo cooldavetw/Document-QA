@@ -21,7 +21,7 @@ PG_DATABASE = "postgres"
 
 PAGE_CONTENT_SCHEMA = "page_content"
 
-EMBEDDING_MODEL = "qwen3"  # OpenAI embedding model
+EMBEDDING_MODEL = "embedding"  # OpenAI embedding model
 OPENAI_DEFAULT_BASE_URL = "http://192.168.66.26:4000/v1"
 
 
@@ -179,8 +179,21 @@ def format_context(chunks: List[dict]) -> str:
     return "\n".join(parts)
 
 
+def _init_chat_state() -> None:
+    if "messages" not in st.session_state:
+        st.session_state.messages = []  # list[dict]: {role, content, (optional) context}
+    if "chat_table" not in st.session_state:
+        st.session_state.chat_table = None
+
+
+def _clear_chat() -> None:
+    st.session_state.messages = []
+
+
 def main():
     st.title("AI文件問答小幫手")
+
+    _init_chat_state()
 
     st.sidebar.header("LLM Settings")
     llm_api_key = st.sidebar.text_input(
@@ -196,7 +209,7 @@ def main():
     )
     llm_model = st.sidebar.text_input(
         "LLM model name",
-        value="gpt-oss",
+        value="gemma4",
         help="Model name for answering questions.",
     )
 
@@ -220,89 +233,121 @@ def main():
 
     engine = get_engine()
     tables = list_page_content_tables(engine)
-    st.subheader("1. 選擇文件")
-    if tables:
-        selected_table = st.selectbox("Table", tables)
-    else:
+    if not tables:
         st.error("No page_content tables found. Load PDFs first.")
         return
 
-    st.subheader("2. 輸入你的問題")
-    user_query = st.text_area("Your question", height=120)
-    top_k = st.slider("Top K passages", min_value=1, max_value=10, value=2)
-    run = st.button("進行AI問答")
+    st.sidebar.header("Retrieval Settings")
+    selected_table = st.sidebar.selectbox("文件 (Table)", tables, key="selected_table")
+    top_k = st.sidebar.slider("Top K passages", min_value=1, max_value=10, value=2, key="top_k")
 
-    if run:
+    # If the user switches documents, reset chat so history doesn't mix across files.
+    if st.session_state.chat_table is None:
+        st.session_state.chat_table = selected_table
+    elif st.session_state.chat_table != selected_table:
+        st.session_state.chat_table = selected_table
+        _clear_chat()
+
+    st.sidebar.button("Clear chat", on_click=_clear_chat)
+
+    # Render chat history
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            if msg.get("context"):
+                with st.expander("Retrieved context"):
+                    st.write(msg["context"])
+
+    # Chat input
+    if user_query := st.chat_input("輸入你的問題…"):
+        st.session_state.messages.append({"role": "user", "content": user_query})
+        with st.chat_message("user"):
+            st.markdown(user_query)
+
+        # Validate required settings
+        error = None
         if not user_query.strip():
-            st.error("輸入你的問題")
+            error = "輸入你的問題"
+        elif not embed_api_key:
+            error = "OpenAI API key for embeddings is required."
+        elif not llm_api_key:
+            error = "OpenAI API key for the LLM is required."
+        elif not embed_model.strip():
+            error = "Embedding model name is required."
+        elif not llm_model.strip():
+            error = "LLM model name is required."
+
+        if error:
+            with st.chat_message("assistant"):
+                st.error(error)
+            st.session_state.messages.append({"role": "assistant", "content": f"{error}"})
             return
-        if not embed_api_key:
-            st.error("OpenAI API key for embeddings is required.")
-            return
-        if not llm_api_key:
-            st.error("OpenAI API key for the LLM is required.")
-            return
-        if not embed_model.strip():
-            st.error("Embedding model name is required.")
-            return
-        if not llm_model.strip():
-            st.error("LLM model name is required.")
-            return
+
         try:
             table = sanitize_table_name(selected_table)
         except ValueError as exc:
-            st.error(f"Invalid table name: {exc}")
+            with st.chat_message("assistant"):
+                st.error(f"Invalid table name: {exc}")
+            st.session_state.messages.append(
+                {"role": "assistant", "content": f"Invalid table name: {exc}"}
+            )
             return
 
-        with st.spinner("Embedding query..."):
-            try:
-                query_embedding = embed_texts(embed_api_key, embed_model, embed_base_url, [user_query])[0]
-            except Exception as exc:
-                st.error(f"Failed to generate embedding: {exc}")
+        with st.chat_message("assistant"):
+            with st.spinner("Embedding query..."):
+                try:
+                    query_embedding = embed_texts(
+                        embed_api_key, embed_model, embed_base_url, [user_query]
+                    )[0]
+                except Exception as exc:
+                    st.error(f"Failed to generate embedding: {exc}")
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": f"Failed to generate embedding: {exc}"}
+                    )
+                    return
+
+            with st.spinner("Retrieving context from pgvector..."):
+                try:
+                    chunks = fetch_top_chunks(engine, table, query_embedding, top_k)
+                except Exception as exc:
+                    st.error(f"Failed to fetch context: {exc}")
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": f"Failed to fetch context: {exc}"}
+                    )
+                    return
+
+            if not chunks:
+                st.warning("No results found in the selected table.")
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": "No results found in the selected table."}
+                )
                 return
 
-        with st.spinner("Retrieving context from pgvector..."):
-            try:
-                chunks = fetch_top_chunks(engine, table, query_embedding, top_k)
-            except Exception as exc:
-                st.error(f"Failed to fetch context: {exc}")
-                return
+            context_text = format_context(chunks)
+            agent = build_agent(llm_api_key, llm_model, llm_base_url or OPENAI_DEFAULT_BASE_URL)
+            prompt = (
+                "Use the following context to answer the question.\n\n"
+                f"{context_text}\n\nQuestion: {user_query}"
+            )
 
-        if not chunks:
-            st.warning("No results found in the selected table.")
-            return
+            with st.spinner("Running agent..."):
+                try:
+                    result = asyncio.run(agent.run(prompt))
+                except Exception as exc:
+                    st.error(f"Agent call failed: {exc}")
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": f"Agent call failed: {exc}"}
+                    )
+                    return
 
-        context_text = format_context(chunks)
-        agent = build_agent(llm_api_key, llm_model, llm_base_url or OPENAI_DEFAULT_BASE_URL)
-        prompt = (
-            "Use the following context to answer the question.\n\n"
-            f"{context_text}\n\nQuestion: {user_query}"
+            answer = getattr(result, "output", None) or getattr(result, "data", None) or str(result)
+            st.markdown(answer)
+            with st.expander("Retrieved context"):
+                st.write(context_text)
+
+        st.session_state.messages.append(
+            {"role": "assistant", "content": answer, "context": context_text}
         )
-
-        with st.spinner("Running agent..."):
-            try:
-                result = asyncio.run(agent.run(prompt))
-            except Exception as exc:
-                st.error(f"Agent call failed: {exc}")
-                return
-
-        answer = getattr(result, "output", None) or getattr(result, "data", None) or str(result)
-        st.subheader("Answer")
-        st.write(answer)
-
-        with st.expander("Retrieved context"):
-            st.write(context_text)
-
-        with st.expander("Raw result"):
-            raw_dict = None
-            if hasattr(result, "model_dump"):
-                raw_dict = result.model_dump()
-            elif hasattr(result, "to_dict"):
-                raw_dict = result.to_dict()
-            if raw_dict is not None:
-                st.json(raw_dict, expanded=False)
-            else:
-                st.write(result)
 
 
 if __name__ == "__main__":
