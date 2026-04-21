@@ -22,7 +22,7 @@ PG_DATABASE = "postgres"
 PAGE_CONTENT_SCHEMA = "page_content"
 
 EMBEDDING_MODEL = "qwen3"  # OpenAI embedding model
-OPENAI_DEFAULT_BASE_URL = "http://192.168.11.20:4000/v1"
+OPENAI_DEFAULT_BASE_URL = "http://192.168.66.26:4000/v1"
 
 
 # ---------------------------------------------------------------------

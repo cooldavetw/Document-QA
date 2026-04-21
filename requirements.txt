@@ -1,10 +1,6 @@
-streamlit==1.52.0
-pandas==2.3.2
-requests==2.32.4
+streamlit==1.52
 openai==2.14.0
-pydantic-ai>=0.0.24
-pydantic>=2.7,<3.0
-SQLAlchemy>=2.0,<3.0
-# PostgreSQL driver (your code prefers psycopg2-binary, falls back to psycopg)
-psycopg2-binary>=2.9,<3.0
-psycopg[binary]>=3.2,<4.0
+pydantic-ai[openai]
+pydantic
+SQLAlchemy
+psycopg2-binary
