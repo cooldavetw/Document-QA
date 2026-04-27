@@ -21,8 +21,9 @@ PG_DATABASE = "postgres"
 
 PAGE_CONTENT_SCHEMA = "page_content"
 
+LLM_MODEL = "gemma4"  # OpenAI model for answering questions
 EMBEDDING_MODEL = "embedding"  # OpenAI embedding model
-OPENAI_DEFAULT_BASE_URL = "http://192.168.66.26:4000/v1"
+OPENAI_DEFAULT_BASE_URL = "http://llm-proxy:4000/v1"
 
 
 # ---------------------------------------------------------------------
@@ -209,7 +210,7 @@ def main():
     )
     llm_model = st.sidebar.text_input(
         "LLM model name",
-        value="gemma4",
+        value=LLM_MODEL,
         help="Model name for answering questions.",
     )
 
