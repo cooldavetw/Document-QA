@@ -21,7 +21,7 @@ PG_DATABASE = "postgres"
 
 PAGE_CONTENT_SCHEMA = "page_content"
 
-LLM_MODEL = "gemma4"  # OpenAI model for answering questions
+LLM_MODEL = "gemma-4"  # OpenAI model for answering questions
 EMBEDDING_MODEL = "embedding"  # OpenAI embedding model
 OPENAI_DEFAULT_BASE_URL = "http://llm-proxy:4000/v1"
 
